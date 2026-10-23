@@ -162,6 +162,84 @@ def run_filter(sig: dict, mass_kg: float, fs: float = pp.GRF_RATE, loop_dt: floa
     return {"t": ticks, "p": out_p, "v": out_v, "steps": pd.DataFrame(steps)}
 
 
+class LabKalmanStream:
+    """kalman_filter_step one tick at a time, for live use (the live GUI's lab-KF model): the arithmetic of run_filter
+    (tests/test_song_kf.py checks they agree tick for tick). As in the lab code, a tick whose force input hasn't changed
+    since the previous one is skipped (no new data; skip_repeated=False turns this off, as in run_filter)."""
+
+    def __init__(self, mass_kg: float, skip_repeated: bool = True):
+        self.mass, self.skip_repeated = float(mass_kg), skip_repeated
+        d = MODEL_DT
+        self.a01, self.b0, self.b1 = d, d * d / 2, d
+        self.q00, self.q01, self.q11 = self.b0 * self.b0 * NOISE_Q2, self.b0 * self.b1 * NOISE_Q2, self.b1 * self.b1 * NOISE_Q2
+        self.r0, self.r1 = NOISE_V[0] ** 2, NOISE_V[1] ** 2
+        self.x0 = self.x1 = 0.0
+        (self.p00, self.p01), (_, self.p11) = P0
+        self.p_step_0 = self.p_step_1 = 0.0
+        self.t_step_0, self.t_step_1 = -0.5, 0.0
+        self.len_step, self.n_step, self.n_ts = 0.7, 0, 0
+        self.com_step = self.dcom_step = self.v_tm_mean = 0.0
+        self.stance_l = self.stance_r = False
+        self.global_t1 = 0.0
+        self.u_prev = None
+
+    def tick(self, now: float, fy_sum_n: float, fz_l_n: float, fz_r_n: float, cop_l: float, cop_r: float,
+             vtm: float) -> dict | None:
+        """One loop iteration at `now` (s since the filter started) on the latest sample: tared Fy_l + Fy_r and Fz per
+        plate (N), fore-aft COP per plate (m), belt speed. Returns the step record on a step tick (`used`: the
+        controller acts on it), else None; skipped ticks change nothing."""
+        u = FY_SIGN * fy_sum_n / self.mass
+        if self.skip_repeated and self.u_prev is not None and u == self.u_prev:
+            return None
+        self.u_prev = u
+        fzl, fzr = fz_l_n / self.mass, fz_r_n / self.mass
+        global_t0, self.global_t1 = self.global_t1, now
+        delt = self.global_t1 - global_t0
+        a01, b0, b1 = self.a01, self.b0, self.b1
+        self.x0, self.x1 = self.x0 + a01 * self.x1 + b0 * u, self.x1 + b1 * u
+        self.p00, self.p01, self.p11 = (self.p00 + 2 * a01 * self.p01 + a01 * a01 * self.p11 + self.q00,
+                                        self.p01 + a01 * self.p11 + self.q01, self.p11 + self.q11)
+        n = self.n_ts
+        self.com_step = (self.com_step * n + self.x0) / (n + 1)
+        self.dcom_step = (self.dcom_step * n + self.x1) / (n + 1)
+        self.v_tm_mean = (self.v_tm_mean * n + vtm) / (n + 1)
+        self.n_ts += 1
+        flag, leg = False, None
+        if not self.stance_l and fzl > THRESHOLD_FZ:
+            flag, self.p_step_0, self.p_step_1, leg = True, self.p_step_1, cop_l, "l"
+        if not self.stance_r and fzr > THRESHOLD_FZ:
+            flag, self.p_step_0, self.p_step_1, leg = True, self.p_step_1, cop_r, "r"
+        if flag:
+            self.t_step_0, self.t_step_1 = self.t_step_1, now
+            self.len_step = self.p_step_1 - self.p_step_0
+            self.n_step += 1
+            self.n_ts = 0
+        self.stance_l, self.stance_r = fzl > THRESHOLD_FZ, fzr > THRESHOLD_FZ
+        self.p_step_0 -= vtm * delt
+        self.p_step_1 -= vtm * delt
+        if not flag:
+            return None
+        step_t = self.t_step_1 - self.t_step_0
+        used = self.n_step == 1 or step_t < MAX_STEP_S
+        com_mes = (self.p_step_1 + self.p_step_0) / 2
+        dcom_mes = self.len_step / step_t - self.v_tm_mean if step_t > 0 else np.nan
+        if used and np.isfinite(com_mes) and np.isfinite(dcom_mes):
+            s00, s01, s11 = self.p00 + self.r0, self.p01, self.p11 + self.r1
+            det = s00 * s11 - s01 * s01
+            i00, i01, i11 = s11 / det, -s01 / det, s00 / det
+            k00, k01 = self.p00 * i00 + self.p01 * i01, self.p00 * i01 + self.p01 * i11
+            k10, k11 = self.p01 * i00 + self.p11 * i01, self.p01 * i01 + self.p11 * i11
+            e0, e1 = com_mes - self.com_step, dcom_mes - self.dcom_step
+            self.x0, self.x1 = self.x0 + k00 * e0 + k01 * e1, self.x1 + k10 * e0 + k11 * e1
+            p00, p01, p11 = self.p00, self.p01, self.p11
+            self.p00, self.p01, self.p11 = ((1 - k00) * p00 - k01 * p01, (1 - k00) * p01 - k01 * p11,
+                                            -k10 * p01 + (1 - k11) * p11)
+        else:
+            used = False
+        return {"t": now, "leg": leg, "step_t": step_t, "com_mes": com_mes, "dcom_mes": dcom_mes, "used": used,
+                "com_step": self.com_step, "dcom_step": self.dcom_step, "v_tm_mean": self.v_tm_mean}
+
+
 def estimator_cache(cfg: dict) -> Path:
     key = {"version": VERSION, "loop_dt": LOOP_DT, "model_dt": MODEL_DT, "q2": NOISE_Q2, "noise_v": NOISE_V, "P0": P0,
            "threshold_fz": THRESHOLD_FZ, "max_step_s": MAX_STEP_S, "fy_sign": FY_SIGN,

@@ -87,3 +87,32 @@ def test_engine_warns_when_loaded_during_tare():
         assert "unloaded" in eng.message
     finally:
         eng.stop()
+
+
+def test_lab_kf_pipeline_logs_steps_and_commands(tmp_path):
+    from grf2com.config import load_config
+    from grf2com.live_session import LabKfPipeline, LabKfSpec
+    from grf2com.treadmill import plate_frames
+
+    cfg = load_config()
+    plates = plate_frames(cfg["gui"]["plates"], cfg["gui"]["grf"]["plate_axes"])
+    eng = LiveEngine(SyntheticSource(mass=SUBJECT["mass"], pace=0), SUBJECT, tare_s=2.0)
+    eng.enable(LabKfSpec(plates))
+    eng.start()
+    try:
+        assert wait_for(lambda: eng.state == "running" and "lab_kf" in eng.pipes)
+        eng.start_recording(tmp_path, "s")
+        assert wait_for(lambda: len(eng.snapshot()["models"]["lab_kf"]["steps"]) >= 10)
+        logs = eng.stop_recording()
+        m = eng.snapshot()["models"]["lab_kf"]
+    finally:
+        eng.stop()
+    assert m["warm"] == 1.0 and m["note"] == "" and np.isfinite(m["com"]).all()
+    assert 0.1 < m["used"].mean() < 0.5                     # opaque only around accepted heel strikes
+    assert m["command"] is not None and 0.0 <= m["command"][0] <= 2.6
+    df = pd.read_csv(logs[0]["log"])
+    assert list(df.columns) == LOG_COLS + LabKfPipeline.extra_cols
+    steps = df[df.kf_used == 1]
+    assert len(steps) >= 5 and steps.kf_v_target.notna().all() and df.kf_v_target[df.kf_used == 0].isna().all()
+    # the step dots sit at com_step in the mocap lab frame
+    assert np.allclose(np.diff(np.array([p[0] for _, p in m["steps"]])[-4:]), 0, atol=0.05)

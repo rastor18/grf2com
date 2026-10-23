@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import Future
 
 
@@ -80,3 +81,34 @@ class QtmRecorder:
         except Exception:  # noqa: BLE001  (already disconnected or not in control)
             pass
         conn.disconnect()
+
+
+def read_force_plates(host: str = "127.0.0.1", timeout: float = 3.0) -> list[dict]:
+    """The force plates in QTM's settings, read-only (no control or password needed): [{name, corners, origin}],
+    corners (4, 3) in m in the lab frame, origin (3,) in m in the plate's own axes (QTM's Origin setting)."""
+    import qtm_rt
+
+    async def get() -> bytes:
+        conn = await qtm_rt.connect(host, timeout=timeout)
+        if conn is None:
+            raise ConnectionError(f"could not connect to QTM at {host}")
+        try:
+            return await conn.get_parameters(parameters=["force"])
+        finally:
+            conn.disconnect()
+
+    force = ET.fromstring(asyncio.run(get())).find("Force")
+    if force is None:
+        raise LookupError("QTM has no measurement or preview open, so its force-plate settings aren't available")
+    scale = 0.001 if (force.findtext("Unit_Length") or "mm").strip() == "mm" else 1.0
+    plates = []
+    for plate in force.findall("Plate"):
+        loc = plate.find("Location")
+        corners = [[scale * float(loc.find(f"Corner{i}").findtext(a)) for a in "XYZ"] for i in range(1, 5)]
+        origin = plate.find("Origin")
+        plates.append({"name": plate.findtext("Name") or f"plate {plate.findtext('Force_Plate_Index')}",
+                       "corners": corners,
+                       "origin": [scale * float(origin.findtext(a)) for a in "XYZ"] if origin is not None else None})
+    if not plates:
+        raise ValueError("QTM has no force plates configured")
+    return plates

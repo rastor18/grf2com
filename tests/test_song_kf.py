@@ -47,3 +47,26 @@ def test_causal_start_and_mass():
     res = run_filter(sig, MASS, FS)
     assert res["t"][0] >= 3.0
     assert abs(calibrated_mass(sig, MASS) - 75.0) < 0.1
+
+
+def test_streaming_filter_matches_replay():
+    from grf2com.baselines.song_kf import LabKalmanStream
+
+    sig = ideal_gait(start_s=2.0)
+    sig["Fy_l"] = sig["Fy_l"] + 30.0 * np.sin(sig["t"] * 7.0)        # some force input to integrate
+    ref = run_filter(sig, MASS, FS)
+    i0 = int(np.flatnonzero(sig["speed"] > 0)[0])
+    t_start = sig["t"][i0]
+    rows = np.minimum(np.searchsorted(sig["t"], ref["t"], side="right") - 1, len(sig["t"]) - 1)
+    kf = LabKalmanStream(MASS, skip_repeated=False)
+    p, steps = [], []
+    for k, r in enumerate(rows):
+        st = kf.tick(ref["t"][k] - t_start, sig["Fy_l"][r] + sig["Fy_r"][r], sig["Fz_l"][r], sig["Fz_r"][r],
+                     sig["COPy_l"][r], sig["COPy_r"][r], sig["speed"][r])
+        p.append(kf.x0)
+        if st:
+            steps.append(st)
+    np.testing.assert_allclose(p, ref["p"], rtol=0, atol=1e-12)
+    assert len(steps) == len(ref["steps"])
+    np.testing.assert_allclose([s["com_step"] for s in steps], ref["steps"].com_step, atol=1e-12)
+    assert [s["used"] for s in steps] == ref["steps"].used.tolist()

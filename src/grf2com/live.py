@@ -73,10 +73,10 @@ class SyntheticSource:
                 continue
             s = p / 0.6
             fz = 1.1 * self.bw * np.sin(np.pi * s)
-            cop_y = -150.0 + 300.0 * s                                  # mm, heel -> toe
+            cop_y = 750.0 + 300.0 * s                                   # mm from the rear edge, heel -> toe
             raw[f"Fz_{side}"] += fz
-            raw[f"Fy_{side}"] += 0.15 * fz * np.cos(np.pi * s)
-            raw[f"Fx_{side}"] += 0.05 * fz
+            raw[f"Fy_{side}"] += 0.15 * fz * np.cos(np.pi * s)          # braking, then propulsion (reaction = -Fy)
+            raw[f"Fx_{side}"] += (0.05 if side == "l" else -0.05) * fz  # reaction toward the midline
             raw[f"Mx_{side}"] += fz * cop_y / 1000.0                    # COPy = 1000 Mx / Fz
             raw[f"My_{side}"] += -fz * x0 / 1000.0                      # COPx = -1000 My / Fz
         return raw
