@@ -1,0 +1,96 @@
+# Base config. Model files in configs/models/ are deep-merged on top; CLI --set key.sub=value overrides both.
+# All paths are relative to the project root.
+
+paths:
+  data_dir: AE_grf2com_csv
+  infotable: infotable.csv
+  trial_map: trial_map.csv        # optional; not in the folder yet
+  cache_dir: cache
+  runs_dir: runs
+  results_dir: results
+  lab_repo: ../self-paced-treadmill-VT_visual_feedback   # the lab's self-paced treadmill code (read-only; optional)
+
+preprocess:
+  grf_rate: 60                    # model input rate in Hz: 60 (= CoM rate), 120 or 240
+  lowpass_hz: 25                  # causal Butterworth low-pass before decimation
+  filter_order: 2
+  contact_threshold_n: 50         # contact = zeroed Fz above this
+  cop_from_moments: true          # COPx = -1000 My / Fz, COPy = 1000 Mx / Fz from tared channels (source COP is unusable)
+  unloaded_margin_n: 40           # unloaded = raw Fz below its 1st percentile + this margin
+  unloaded_erode_ms: 30           # shrink unloaded periods to stay clear of heel strike / toe off
+  tare_window_s: null             # null = tare from the whole trial; a number = only the first N s (like a pre-trial tare)
+  valid_min_bw: 0.3               # valid target needs total zeroed Fz above this fraction of body weight
+  align_shift_frames: 0           # CoM target for frame j = CoM frame j + shift
+  workers: 4
+
+data:
+  features: [forces, cop, moments, contact, speed]   # also available: total_force, net_cop
+  force_per_bw: true              # divide forces by body weight (mass * g)
+  belt_ml_offset_mm: 508           # each plate's ML origin is +/- one belt width from the treadmill centre (lab code)
+  subject_features: [heights, mass, legs, feet]      # optional: ages, sexes, shoes. dephys is rejected.
+  # Locked final test set: left out of every development split, normalization statistic, baseline tuning,
+  # sweep, leaderboard and the data report. Only scripts/final_test.py --confirm loads these subjects.
+  final_test_subjects: [AE01, AE05, AE08]
+  final_test_notes:
+    AE01: "AE01 T1 was used in the early data checks, before the subject was locked."
+  split: loso                     # loso | trial_holdout (both over the development subjects only)
+  val_offset: 1                   # LOSO validation subject = next development subject (wraps around)
+  trial_holdout:
+    val: [T7]
+    test: [T8]
+  dev_trials_per_subject: 2
+  window_s: 4.0                   # training window length
+  warmup_s: 2.0                   # loss only on the part of each window after this
+
+target:
+  delay_ms: 0                     # predict CoM at t - delay (trades latency for accuracy)
+  vertical: anthro_centered       # absolute | anthro_residual | anthro_centered (network learns height minus an
+                                  # anthropometric estimate / minus each training subject's mean; see data.FeatureBuilder)
+
+model:
+  name: tcn
+  subject_fusion: film            # none | input | head | film
+
+train:
+  device: auto                    # auto picks cuda -> xpu -> mps -> cpu
+  seed: 0
+  batch_size: 64
+  steps_per_epoch: 200
+  epochs: 60
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  patience: 10                    # early stopping on validation RMSE, in epochs
+  dev_epochs: 3
+  dev_steps_per_epoch: 20
+
+eval:
+  window_s: 4.0                   # streaming evaluation window
+  hop_s: 2.0                      # keep the last hop of each window
+  batch_size: 256
+  latency_runs: 30
+
+realtime:
+  # How the training data were filtered before this pipeline (the user's MATLAB step: filtfilt, 2nd order, 10 Hz at
+  # 1200 Hz). Live, the zero-phase filter can't be used; the streaming runtime applies the same Butterworth causally
+  # `passes_live` times (2 passes = the filtfilt magnitude response, ~45 ms delay). Set to null for unfiltered data.
+  upstream_filter: {kind: filtfilt, order: 2, cutoff_hz: 10, passes_live: 2}
+  # Bertec ZMQ data stream (bertec_remote_control.py): our channel -> [message key, sign]. Signs are NOT verified
+  # against the QTM export yet: run scripts/check_live_mapping.py on a session recorded both ways and fix them here.
+  bertec:
+    host: 127.0.0.1
+    data_port: 5556
+    channels:
+      Fx_l: [fxl, 1]
+      Fy_l: [fyl, 1]
+      Fz_l: [fzl, 1]
+      Mx_l: [mxl, 1]
+      My_l: [myl, 1]
+      Mz_l: [mzl, 1]
+      Fx_r: [fxr, 1]
+      Fy_r: [fyr, 1]
+      Fz_r: [fzr, 1]
+      Mx_r: [mxr, 1]
+      My_r: [myr, 1]
+      Mz_r: [mzr, 1]
+    speed_keys: [velocityl, velocityr]      # belt speed = mean of these

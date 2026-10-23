@@ -1,0 +1,9 @@
+# Dilated causal residual TCN. Receptive field = 1 + 2 * (kernel_size - 1) * sum(dilations)
+# = 125 samples (~2.1 s) at 60 Hz. Dilations are scaled by grf_rate / 60 so the field stays ~2 s.
+model:
+  name: tcn
+  channels: 64
+  kernel_size: 3
+  dilations: [1, 2, 4, 8, 16]
+  dropout: 0.1
+  subject_fusion: film

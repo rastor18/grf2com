@@ -1,0 +1,16 @@
+# Install PyTorch first, for your device:
+#   Intel Arc / CPU: pip install torch --index-url https://download.pytorch.org/whl/xpu
+#   NVIDIA:          see https://pytorch.org/get-started/locally/
+# Versions below are the ones installed in .venv (torch==2.14.1+xpu).
+numpy>=2.5
+pandas>=3.1
+pyarrow>=26.0
+scipy>=1.18
+scikit-learn>=1.9
+matplotlib>=3.11
+pyyaml>=6.0
+tqdm>=4.70
+joblib>=1.6
+pytest>=9.1
+# Live shadow mode on the lab PC (Bertec ZMQ stream):
+# pyzmq>=26

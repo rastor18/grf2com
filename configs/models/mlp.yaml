@@ -1,0 +1,8 @@
+# Past-window MLP, implemented as a left-padded Conv1d over the last context_s seconds.
+model:
+  name: mlp
+  context_s: 0.5
+  hidden: 256
+  layers: 3
+  dropout: 0.1
+  subject_fusion: input

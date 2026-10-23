@@ -1,0 +1,8 @@
+# Unidirectional LSTM (bidirectional is rejected because it is not causal).
+model:
+  name: lstm
+  hidden: 128
+  layers: 2
+  dropout: 0.1
+  bidirectional: false
+  subject_fusion: input

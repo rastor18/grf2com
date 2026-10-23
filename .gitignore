@@ -1,0 +1,22 @@
+# Data and regenerated outputs (large; rebuilt by the scripts)
+AE_grf2com_csv/
+infotable.csv
+trial_map.csv
+*.mat
+*.c3d
+cache/
+runs/
+results/
+deploy/logs/
+
+# Third-party papers (copyright)
+*.pdf
+
+# Environments and tooling
+.venv/
+.venv-cuda/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+.claude/settings.local.json

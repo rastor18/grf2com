@@ -1,0 +1,9 @@
+# Causal-masked Transformer encoder with sinusoidal positions over the window.
+model:
+  name: transformer
+  d_model: 64
+  nhead: 4
+  layers: 3
+  dim_feedforward: 128
+  dropout: 0.1
+  subject_fusion: input
