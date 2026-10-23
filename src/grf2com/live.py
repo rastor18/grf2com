@@ -48,8 +48,57 @@ class ReplaySource:
             yield self.t[i], {c: self.raw[c][i] for c in RAW}, self.speed[i]
 
 
+class SyntheticSource:
+    """Made-up walking forces for testing without hardware (live_gui.py's "Synthetic" source): plates unloaded but
+    with un-zeroed offsets like the real ones for `unloaded_s`, then alternating stance at a fixed stride time and belt
+    speed. Not a gait model: it only exercises the pipeline, so the CoM estimates it produces mean nothing.
+    pace 1 = real time with t = time.perf_counter() (like BertecSource), 0 = as fast as possible."""
+
+    OFFSETS = {"Fx_l": 68.0, "Fx_r": 146.0, "Fy_l": 295.0, "Fy_r": 291.0, "Fz_l": 21.0, "Fz_r": 21.0}
+
+    def __init__(self, mass: float = 76.5, fs: float = 1000.0, stride_s: float = 1.1, speed: float = 1.25,
+                 unloaded_s: float = 4.0, pace: float = 1.0):
+        self.bw, self.fs, self.stride, self.speed = 9.81 * mass, fs, stride_s, speed
+        self.unloaded_s, self.pace = unloaded_s, pace
+        self.first_keys = None
+
+    def sample(self, t: float) -> dict[str, float]:
+        raw = {c: self.OFFSETS.get(c, 0.0) for c in RAW}
+        if t < self.unloaded_s:
+            return raw
+        ph = ((t - self.unloaded_s) % self.stride) / self.stride
+        for side, shift, x0 in (("l", 0.0, -465.0), ("r", 0.5, 465.0)):
+            p = (ph - shift) % 1.0
+            if p >= 0.6:   # swing
+                continue
+            s = p / 0.6
+            fz = 1.1 * self.bw * np.sin(np.pi * s)
+            cop_y = -150.0 + 300.0 * s                                  # mm, heel -> toe
+            raw[f"Fz_{side}"] += fz
+            raw[f"Fy_{side}"] += 0.15 * fz * np.cos(np.pi * s)
+            raw[f"Fx_{side}"] += 0.05 * fz
+            raw[f"Mx_{side}"] += fz * cop_y / 1000.0                    # COPy = 1000 Mx / Fz
+            raw[f"My_{side}"] += -fz * x0 / 1000.0                      # COPx = -1000 My / Fz
+        return raw
+
+    def __iter__(self):
+        start = time.perf_counter()
+        i = 0
+        while True:
+            rel = i / self.fs
+            if self.pace:
+                wait = start + rel / self.pace - time.perf_counter()
+                if wait > 0.002:
+                    time.sleep(wait)
+            yield start + rel, self.sample(rel), (self.speed if rel >= self.unloaded_s else 0.0)
+            i += 1
+
+    def close(self):
+        pass
+
+
 class BertecSource:
-    def __init__(self, bcfg: dict, host: str | None = None, port: int | None = None):
+    def __init__(self, bcfg: dict, host: str | None = None, port: int | None = None, timeout_ms: int = 5000):
         import zmq   # pyzmq; the lab PC has it for bertec_remote_control.py
 
         self.channels = {c: (k, float(sign)) for c, (k, sign) in bcfg["channels"].items()}
@@ -57,17 +106,23 @@ class BertecSource:
         if missing:
             raise ValueError(f"realtime.bertec.channels is missing {missing}")
         self.speed_keys = list(bcfg["speed_keys"])
+        self.address = f"tcp://{host or bcfg['host']}:{port or bcfg['data_port']}"
+        self.timeout_ms = timeout_ms
+        self._again = zmq.Again
         self.ctx = zmq.Context.instance()
         self.sock = self.ctx.socket(zmq.SUB)
-        self.sock.setsockopt(zmq.RCVTIMEO, 5000)
-        self.sock.connect(f"tcp://{host or bcfg['host']}:{port or bcfg['data_port']}")
+        self.sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
+        self.sock.connect(self.address)
         self.sock.subscribe("")
         self.first_keys: list[str] | None = None
         self.fs: float | None = None
 
     def __iter__(self):
         while True:
-            msg = self.sock.recv_json()
+            try:
+                msg = self.sock.recv_json()
+            except self._again:
+                raise TimeoutError(f"no Bertec data on {self.address} for {self.timeout_ms / 1000:.0f} s") from None
             if self.first_keys is None:
                 self.first_keys = sorted(msg)
             t = time.perf_counter()

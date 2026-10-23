@@ -21,7 +21,7 @@ git clone <private repo url> grf2com
 cd grf2com
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-.venv\Scripts\python.exe -m pip install -r requirements.txt pyzmq
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 Inference runs on the CPU: one prediction takes ~3–8 ms and preprocessing ~1–3 % of a core. The 4090 is better used
 for training (a second venv with the CUDA wheel, like `.venv-cuda` here).
@@ -57,6 +57,27 @@ mapping is **not verified yet**. It is read from the current config at run time,
   `--log-raw` adds the raw channels. Ctrl+C stops it. `--udp HOST:PORT` publishes `{"t", "frame", "com"}` JSON per
   frame for other programs.
 - Don't use the locked participants (AE01, AE05, AE08) for live tests.
+
+## 4b. Live GUI (same pipeline, with buttons and a 3D view)
+```powershell
+.venv\Scripts\python.exe scripts\live_gui.py
+```
+- **Input:** Bertec (live), or *Synthetic* to try everything without hardware (made-up forces; its CoM means
+  nothing). **Start streaming** tares first (plates unloaded for the tare time), then streams.
+- **Models:** every bundle in `deploy/models/` gets a tick box with its own colour. Ticked models run together on the
+  same stream and can be toggled while streaming; a newly ticked model needs one window (4 s) to warm up. The status
+  shows the total model time per frame against the 16.7 ms budget.
+- **3D view:** the CoM of each model with a trail and a drop line onto the treadmill (`gui.treadmill` in
+  `configs/base.yaml`; with `center: auto` it is placed under the first warmed-up model's CoM, since the treadmill's
+  lab-frame position isn't measured yet). *3D motion scale* magnifies the motion about its recent mean in the view
+  only. Below: AP / ML / vertical time series.
+- **Record:** writes `deploy/logs/<stamp>_<model>.csv` for each ticked model (the `--log-raw` format, so steps 3 and 5
+  work on it) and `<stamp>_session.json` (participant, tare, input rate, models, and per log the `score_live_log.py`
+  command with `--offset-s` from the QTM capture start). With **Capture in QTM**, it first starts a QTM capture over
+  the real-time protocol (QTM open, real-time server on, control password typed in the GUI) and on stop saves it as
+  take `<stamp>` in the QTM project's data folder, with a `grf2com_log_start` event in the take. If QTM doesn't start,
+  nothing is recorded.
+- Settings (participant, models, password) are remembered per Windows user (QSettings), never in the repo.
 
 ## 5. Score the session
 Export the session's mocap CoM like the training data (`*_CoM.csv`), then

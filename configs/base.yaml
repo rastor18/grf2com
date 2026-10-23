@@ -94,3 +94,13 @@ realtime:
       My_r: [myr, 1]
       Mz_r: [mzr, 1]
     speed_keys: [velocityl, velocityr]      # belt speed = mean of these
+  # QTM real-time server, for the GUI's Record button (scripts/live_gui.py). The control password is typed in the GUI.
+  qtm: {host: 127.0.0.1}
+
+# Live GUI (scripts/live_gui.py): treadmill drawn in the 3D view, in the mocap lab frame (m; x = AP = CoM_Pos_1,
+# y = ML = CoM_Pos_2, z = vertical = CoM_Pos_3). The geometry is approximate and not measured in the lab frame yet.
+# center: [ap, ml] of the treadmill centre, or auto (placed under the first model's mean CoM once it has warmed up).
+gui:
+  treadmill: {length_m: 1.75, belt_width_m: 0.5, gap_m: 0.02, surface_z_m: 0.0, center: auto}
+  history_s: 10                 # time-series plots
+  trail_s: 3                    # 3D trail

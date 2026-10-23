@@ -12,5 +12,9 @@ pyyaml>=6.0
 tqdm>=4.70
 joblib>=1.6
 pytest>=9.1
-# Live shadow mode on the lab PC (Bertec ZMQ stream):
-# pyzmq>=26
+# Live shadow mode on the lab PC (Bertec ZMQ stream) and the live GUI (scripts/live_gui.py, QTM recording):
+pyzmq>=26
+PyQt5>=5.15
+pyqtgraph>=0.14
+PyOpenGL>=3.1
+qtm-rt>=3.1

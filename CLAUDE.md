@@ -193,7 +193,14 @@ The target use is **real-time with force plates**, so every model and every prep
 - `src/grf2com/realtime.py`: `StreamingPreprocessor` buffers raw samples and processes one block per frame, exactly
   equal to the batch cache (`tests/test_realtime.py`; 12–25 µs per sample). `StreamingEstimator` runs the model on
   the last 4 s every frame (~7 ms median CPU on the laptop). `src/grf2com/live.py`: replay / Bertec sources, tare,
-  run loop. `src/grf2com/bundle.py`: bundle write/load.
+  run loop, plus `SyntheticSource` (made-up forces for hardware-free tests). `src/grf2com/bundle.py`: bundle
+  write/load.
+- Live GUI (`scripts/live_gui.py`, `src/grf2com/gui.py`, PyQt5 + pyqtgraph): start / stop streaming (Bertec or
+  synthetic), several bundles at once (`src/grf2com/live_session.py` `LiveEngine`: one pipeline per bundle, toggled
+  while streaming; `tests/test_live_session.py`), 3D CoM view over the treadmill (`gui:` in `configs/base.yaml`, lab-frame
+  treadmill position not measured, `center: auto`), and Record = per-model logs + a QTM capture saved as take
+  `<stamp>` (`src/grf2com/qtm.py`, qtm-rt, same sequence as the lab's Treadmill_QTM `QTMControl.py`). The QTM path is
+  not tested against a running QTM yet.
 - Live data: Bertec ZMQ publisher (`bertec_remote_control.py`, port 5556), subscribed without conflation as a
   second, read-only subscriber. The lab's own loop keeps only the latest sample every 15 ms. The publish rate is
   measured at start-up.
@@ -220,6 +227,7 @@ Use a venv interpreter: `.venv/Scripts/python.exe` (Intel / CPU) or `.venv-cuda/
 .venv/Scripts/python.exe scripts/final_test.py --configs ... --confirm   # locked subjects; only when the user asks
 .venv-cuda/Scripts/python.exe scripts/export_model.py --config configs/models/tcn.yaml --tag full_s0 --name tcn_v1
 .venv/Scripts/python.exe scripts/live_shadow.py --bundle deploy/models/tcn_v1 --source replay --trial AE02_T1 --pace 0
+.venv/Scripts/python.exe scripts/live_gui.py                   # live GUI (Bertec or synthetic), Record = logs + QTM take
 ```
 
 ## Machine
