@@ -69,7 +69,7 @@ def main() -> None:
         if not args.trial:
             sys.exit("--trial is required for replay")
         s, t = args.trial.split("_")
-        source = live.ReplaySource(here, s, t, args.pace)
+        source = live.ReplaySource(here, s, t, args.pace, cfg["preprocess"].get("grf_source", "csv"))
         tare = json.loads((pp.cache_dir(cfg) / f"{s}_{t}.json").read_text())
         offsets, fs = {c: tare[f"off_{c}"] for c in RAW}, source.fs
         upstream = args.upstream or "off"

@@ -3,6 +3,7 @@
 
 paths:
   data_dir: AE_grf2com_csv
+  raw_grf_dir: grf_raw            # raw force-plate C3Ds (unfiltered; read-only), used when preprocess.grf_source: raw
   infotable: infotable.csv
   trial_map: trial_map.csv        # optional; not in the folder yet
   cache_dir: cache
@@ -11,6 +12,9 @@ paths:
   lab_repo: ../self-paced-treadmill-VT_visual_feedback   # the lab's self-paced treadmill code (read-only; optional)
 
 preprocess:
+  grf_source: csv                 # csv = the exported GRF (MATLAB filtfilt 10 Hz, zero phase) | raw = unfiltered C3Ds
+  prefilter: null                 # null | {order, cutoff_hz, passes}: causal Butterworth on the raw F/M channels before
+                                  # the tare, `passes` times (live: same filter in StreamingPreprocessor)
   grf_rate: 60                    # model input rate in Hz: 60 (= CoM rate), 120 or 240
   lowpass_hz: 25                  # causal Butterworth low-pass before decimation
   filter_order: 2

@@ -1,5 +1,6 @@
 # Data and regenerated outputs (large; rebuilt by the scripts)
 AE_grf2com_csv/
+grf_raw/
 infotable.csv
 trial_map.csv
 *.mat

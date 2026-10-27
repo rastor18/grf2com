@@ -50,7 +50,9 @@ def load_signals(cfg: dict, subject: str, trial: str, cdir: Path) -> dict:
     """1200 Hz inputs: tared Fy, Fz (N) and fore-aft COP (m) per plate, commanded belt speed, time."""
     stem = project_path(cfg, "data_dir") / f"{subject}_{trial}"
     tare = json.loads((cdir / f"{subject}_{trial}.json").read_text())
-    grf = pd.read_csv(f"{stem}_GRF.csv", engine="pyarrow")
+    # the same force source (CSV or raw C3D, prefiltered or not) that the tare offsets were measured on
+    grf = pp.load_grf(subject, trial, cfg["preprocess"], project_path(cfg, "data_dir"),
+                      project_path(cfg, "raw_grf_dir"))
     tm = pd.read_csv(f"{stem}_Treadmill.csv", engine="pyarrow")
     out = {"t": grf["time"].to_numpy(float)}
     for s, side in pp.SIDES.items():

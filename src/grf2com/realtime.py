@@ -1,8 +1,8 @@
 """Sample-by-sample (real-time) versions of the preprocessing and of model inference.
 
-StreamingPreprocessor reproduces preprocess.process_trial one raw sample at a time: tare, contact flag, COP recomputed
-from moments and held while unloaded, causal Butterworth low-pass, and one 60 Hz frame (preprocess.CHANNELS) every
-1 / grf_rate s. Optionally, a causal emulation of an upstream filter the training data had (realtime.upstream_filter,
+StreamingPreprocessor reproduces preprocess.process_trial one raw sample at a time: the optional causal prefilter
+(preprocess.prefilter), tare, contact flag, COP recomputed from moments and held while unloaded, causal Butterworth
+low-pass, and one 60 Hz frame (preprocess.CHANNELS) every 1 / grf_rate s. Optionally, a causal emulation of an upstream filter the training data had (realtime.upstream_filter,
 e.g. the MATLAB filtfilt at 10 Hz) is applied to the raw forces and moments first.
 
 StreamingEstimator keeps the last window of frames and runs the model on it at every frame, returning the CoM for the
@@ -85,10 +85,17 @@ class StreamingPreprocessor:
             raise ValueError("streaming preprocessing recomputes COP from moments (preprocess.cop_from_moments: true)")
         sos = signal.butter(int(pcfg["filter_order"]), float(pcfg["lowpass_hz"]), fs=fs, output="sos")
         self.lowpass = _BlockSOS(sos, len(FRAME))
+        if upstream_filter and pcfg.get("grf_source", "csv") == "raw":
+            raise ValueError("a model trained on raw forces (preprocess.grf_source: raw) must not get an upstream filter "
+                             "emulation; set realtime.upstream_filter to null")
         self.pre = []
         if upstream_filter:
             pre = signal.butter(int(upstream_filter["order"]), float(upstream_filter["cutoff_hz"]), fs=fs, output="sos")
-            self.pre = [_BlockSOS(pre, len(RAW)) for _ in range(int(upstream_filter.get("passes_live", 1)))]
+            self.pre += [_BlockSOS(pre, len(RAW)) for _ in range(int(upstream_filter.get("passes_live", 1)))]
+        if pcfg.get("prefilter"):   # part of our preprocessing (preprocess.prefilter), applied before the tare
+            p = pcfg["prefilter"]
+            pre = signal.butter(int(p["order"]), float(p["cutoff_hz"]), fs=fs, output="sos")
+            self.pre += [_BlockSOS(pre, len(RAW)) for _ in range(int(p.get("passes", 1)))]
         self.raw_carry = np.zeros(len(RAW))
         self.cop_carry = np.full(4, np.nan)          # COPx_l, COPx_r, COPy_l, COPy_r
         self.t0 = None

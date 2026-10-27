@@ -12,7 +12,7 @@ The target use is **real-time with force plates**, so every model and every prep
 
 ## Status
 - Code is complete: preprocessing, data report, data module, 5 models, training / streaming evaluation, baselines,
-  sweep, leaderboard, benchmark, final test, tests (`pytest`: 54 pass, on a synthetic dataset).
+  sweep, leaderboard, benchmark, final test, tests (`pytest`: 74 pass, on a synthetic dataset).
 - Two venvs: `.venv` (torch 2.14.1+xpu: CPU + Intel Arc) and `.venv-cuda` (torch 2.14.1+cu130: CPU + NVIDIA RTX
   4070 SUPER eGPU). Same code; use `.venv-cuda` when the eGPU is connected (5–40× faster, `results/benchmark.md`).
 - Full development LOSO sweep done (5 models × 8 folds × {recomputed COP `full_s0`, source COP `source_cop_s0`},
@@ -94,6 +94,24 @@ The target use is **real-time with force plates**, so every model and every prep
 - **Vertical is the largest error and is almost all a per-subject constant offset** (87–95% of the networks'
   vertical MSE). Networks (32–41 mm) are worse than the anthropometric height regression alone (mean baseline
   27.3 mm; Kalman 21.7 mm). Example: fold AE07 offset +73 to +92 mm for networks vs +4 mm for the regression.
+- **Raw vs filtered force input (TCN, 3 seeds per arm; `results/raw_vs_filtered.md`, `scripts/raw_vs_filtered_report.py`):**
+  - Arms: `full_s{0,1,2}` (CSV = zero-phase filtfilt, not causal), `raw_s{0,1,2}` (raw C3D + our causal 25 Hz),
+    `raw_pre10_s{0,1,2}` (raw + causal 10 Hz × 2 passes, the live emulation), and the CSV model without retraining on
+    those inputs (`full_s0_on_raw_pre10` = what `tcn_v1` gets live today, `full_s0_on_raw`; `scripts/cross_eval.py`).
+  - Mean RMSE: filtered 15.1 ± 0.2, raw_pre10 15.7 ± 0.4, raw 15.9 ± 0.0, no-retrain on pre10 16.5, on raw 17.2 mm.
+  - **Filtering matters little once the model is retrained.** Losing the zero-phase filter's future information
+    costs +0.65 mm (worse in 7/8 folds, ~1.5 seed spreads), mostly AP (+1.2) and ML (+0.4); vertical is unchanged.
+    Movement shape and the self-pace command are about unchanged (AP shape pulse +0.2 mm; cmd 0.011 → 0.012 m/s).
+    The clearest cost is pulse AP RMSE: +1.9 mm, worse in 8/8 folds (17.4 → 19.3).
+  - The causal 10 Hz prefilter does nothing measurable on top of raw (+0.1 mm, inside the seed spread), so a raw model
+    needs no prefilter (no added lag).
+  - **Not retraining costs more than the filter:** the CSV model on raw + pre10 is +0.75 mm vs a matched model (ML +1.1,
+    vertical +1.9 in 8/8 folds). On raw without prefilter it degrades clearly (AP shape pulse 8.4 → 12.0, self-pace cmd
+    0.018 m/s, worse in 8/8 folds). So a live model should be trained on raw forces.
+  - Baselines: ridge 21.8 (CSV) → 22.2 (raw_pre10) → 23.0 (raw); Kalman 25.4 → 27.2 → 34.2 (force integration is
+    noise sensitive); `song_kf` AP 82.9 → 83.1 → 108.8 mm (the lab KF needs smoothed forces).
+  - Exported as `deploy/models/tcn_raw_v1` (raw_s0 settings, 20 epochs), now the current bundle in DEPLOY.md;
+    in-sample replay of AE02 T1 8.5 / 2.8 / 8.1 mm. `tcn_v1` (CSV-trained) is kept for comparison.
 
 ## Data facts
 - 86 trials (AE01–AE11 × T1–T8; AE05 T8 and AE10 T4 are absent), ~8 min each. Index: `AE_grf2com_csv/trial_index.csv`.
@@ -115,11 +133,13 @@ The target use is **real-time with force plates**, so every model and every prep
   2nd-order Butterworth at 10 Hz. That filter is zero-phase, so every input sample already contains about 50–100 ms
   of future information, and offline results are optimistic for real time. A causal equivalent lags about 22 ms (one
   pass) or about 45 ms (two passes, matching the `filtfilt` magnitude). If COP was filtered as its own channel after
-  QTM computed it, that explains the source vs recomputed COP difference at low force. (Asked the user; not yet
-  confirmed.)
+  QTM computed it, that explains the source vs recomputed COP difference at low force. **Confirmed on the raw
+  C3Ds:** `filtfilt(butter(2, 10 Hz))` of the raw channels reproduces every CSV F/M channel to < 0.002 N RMS (all 86
+  trials, `results/raw_grf_check.md`) after one constant per channel (the exports zero the plates differently; the
+  tare removes it). No rotation or moment transfer.
 - **Training vs deployment gap:** the CSV forces and moments were filtered upstream (zero-phase, see above), so
-  training inputs are not strictly causal and are smoother than a raw live stream. Faithful real-time training needs an
-  unfiltered export (only our causal filter applied). The tare is a whole-trial median (≈ a pre-trial zero, drift
+  training inputs are not strictly causal and are smoother than a raw live stream. The raw C3Ds (below) close that gap:
+  `preprocess.grf_source: raw`. The tare is a whole-trial median (≈ a pre-trial zero, drift
   ≤ 1.5 N); `preprocess.tare_window_s` restricts it to the first N seconds.
 - **Source vs recomputed COP (identification on development trials):** pipeline is Bertec → QTM → Visual3D → CSV,
   F/M filtered (spectra are 130–146 dB down by 100 Hz). Mid-stance (Fz > 200 N): source = recomputed + one constant
@@ -129,6 +149,11 @@ The target use is **real-time with force plates**, so every model and every prep
   (residual 55–170 mm for COPy), so it is nonlinear: most likely COP = M/Fz taken on differently processed
   (unfiltered and/or differently zeroed) signals, with a low-force plateau, then filtered. Settling it needs the
   unfiltered QTM export for one trial.
+- **Raw force data (`grf_raw/*.c3d`, moved in from OneDrive; read-only like the CSVs, gitignored):** Qualisys
+  exports with analog data only: 14 float channels in volts at 1200 Hz (1–6 left plate, 7–12 right, 13–14 unused),
+  diagonal calibration, the same frame count as the CoM; the last 37 rows are NaN (dropped, as in the CSV). Read with
+  `src/grf2com/c3d.py` (numpy, no dependency). Raw noise above 10 Hz is ~15–25 N RMS per channel. Extras without a CSV
+  trial (`T00`, the `AEF*` subjects, `AE07_T03_v1`, `AE09_T06A`) are ignored. AE05 T8 and AE10 T4 are absent here too.
 - **Data report findings (development subjects, `results/data_report.md`):** plate drift ≤ 1.5 N over a trial;
   mean total Fz is 1.04–1.12 × infotable body weight (~4–9 kg carried, likely the exo); cached force lags mocap CoM
   acceleration by ~24 ms vertical / ~20 ms ML (~9 ms of that is the causal filter); stride-averaged recomputed COP
@@ -177,7 +202,14 @@ The target use is **real-time with force plates**, so every model and every prep
 - Runs: `runs/<model>/<tag>/<fold>/` with `config.json`, `history.csv`, `best.pt`, `metrics.json`, `per_trial.csv`,
   `preds.npz`, `curves.png`, `trace.png`, `gait_profile.png`. Sweep tags: `<ablation>_s<seed>`; baselines `<ablation>`.
 - Sweep ablations (`scripts/sweep.py`): `full`, `source_cop`, `no_subject`, `no_speed`, `forces_only`, `forces_cop`,
-  `vert_resid`, `vert_absolute`, `source_cop_vabs`, `single_belt`.
+  `vert_resid`, `vert_absolute`, `source_cop_vabs`, `single_belt`, `plus_labkf`, `plus_kalman`, `plus_both`, `raw`,
+  `raw_pre10`.
+- **Force source:** `preprocess.grf_source: csv` (default) | `raw` (the C3Ds; needs `cop_from_moments: true`), and
+  `preprocess.prefilter: null | {order, cutoff_hz, passes}` (causal, on the 12 F/M channels before the tare). Both are
+  left out of the cache key at their defaults, so old caches stay valid. `pp.load_grf` is the one loader (preprocess,
+  `song_kf`, replay). The streaming preprocessor applies the prefilter too and refuses a raw model combined with
+  `realtime.upstream_filter`. `scripts/check_raw_grf.py` checks raw vs CSV; `scripts/cross_eval.py` evaluates trained
+  runs on another ablation's inputs without retraining (`runs/<model>/<tag>_on_<ablation>/`).
 - **Single-belt inputs** (`single_belt` ablation): simulates a regular, non-split instrumented treadmill. Inputs are
   the summed forces (`total_force`), the combined COP (`single_cop`) and the moments about a common origin
   (`single_moments`: Mx = Fz·COPy, My = −Fz·COPx), plus speed. There are no per-plate channels and no left/right
@@ -199,7 +231,7 @@ The target use is **real-time with force plates**, so every model and every prep
   measured at start-up.
 - `realtime.bertec.channels` (our channel → Bertec key, sign) is unverified; check it with
   `scripts/check_live_mapping.py`. `realtime.upstream_filter` describes the training data's MATLAB `filtfilt`; live,
-  it is emulated causally (2 passes, ~45 ms lag). Set it to null once models are trained on unfiltered data.
+  it is emulated causally (2 passes, ~45 ms lag) for `tcn_v1`. Raw-trained bundles (`tcn_raw_v1`) have it null.
 - Dry runs: in-sample replay of AE02 T1 at 8.2 / 2.4 / 7.1 mm; it keeps up in real time with UDP publishing on.
 - Repo: `git init` done, nothing committed. The repo is private and the data are deidentified (user), so docs can
   mention participants. Raw data, cache/, runs/, results/ and deploy/logs/ stay out of git.
@@ -214,12 +246,15 @@ Use a venv interpreter: `.venv/Scripts/python.exe` (Intel / CPU) or `.venv-cuda/
 .venv-cuda/Scripts/python.exe scripts/sweep.py --ablations full source_cop --baselines   # resumable
 .venv/Scripts/python.exe scripts/transition_report.py          # results/transitions.{csv,md}, speed-pulse scoring
 .venv/Scripts/python.exe scripts/selfpace_replay.py --nets tcn/full_s0   # results/selfpace/, controller command replay
+.venv/Scripts/python.exe scripts/check_raw_grf.py              # results/raw_grf_check.{csv,md}, raw C3D vs CSV
+.venv-cuda/Scripts/python.exe scripts/cross_eval.py --run tcn/full_s0 --ablations raw_pre10 raw   # no retraining
+.venv/Scripts/python.exe scripts/raw_vs_filtered_report.py     # results/raw_vs_filtered.{csv,md}
 .venv/Scripts/python.exe scripts/leaderboard.py                # results/leaderboard.{csv,md} (+ transitions table)
 .venv/Scripts/python.exe scripts/benchmark.py                  # merges into results/benchmark.{csv,md}
 .venv/Scripts/python.exe -m pytest
 .venv/Scripts/python.exe scripts/final_test.py --configs ... --confirm   # locked subjects; only when the user asks
-.venv-cuda/Scripts/python.exe scripts/export_model.py --config configs/models/tcn.yaml --tag full_s0 --name tcn_v1
-.venv/Scripts/python.exe scripts/live_shadow.py --bundle deploy/models/tcn_v1 --source replay --trial AE02_T1 --pace 0
+.venv-cuda/Scripts/python.exe scripts/export_model.py --config configs/models/tcn.yaml --tag raw_s0 --set preprocess.grf_source=raw --set realtime.upstream_filter=null --name tcn_raw_v1
+.venv/Scripts/python.exe scripts/live_shadow.py --bundle deploy/models/tcn_raw_v1 --source replay --trial AE02_T1 --pace 0
 ```
 
 ## Machine

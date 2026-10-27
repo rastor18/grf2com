@@ -25,11 +25,13 @@ from .tables import final_test_subjects
 
 
 class ReplaySource:
-    def __init__(self, cfg: dict, subject: str, trial: str, pace: float = 0.0):
+    def __init__(self, cfg: dict, subject: str, trial: str, pace: float = 0.0, grf_source: str = "csv"):
+        """grf_source: csv (the exported, filtfilt-filtered forces) or raw (the unfiltered C3Ds, like a live stream)."""
         if subject in final_test_subjects(cfg):
             raise ValueError(f"{subject} is a locked final-test subject")
         stem = project_path(cfg, "data_dir") / f"{subject}_{trial}"
-        grf = pd.read_csv(f"{stem}_GRF.csv", engine="pyarrow")
+        grf = pp.load_grf(subject, trial, {"grf_source": grf_source}, project_path(cfg, "data_dir"),
+                          project_path(cfg, "raw_grf_dir"))
         tm = pd.read_csv(f"{stem}_Treadmill.csv", engine="pyarrow")
         self.t = grf["time"].to_numpy(float)
         self.raw = {c: grf[f"{c.split('_')[0]}_{pp.SIDES[c[-1]]}"].to_numpy(float) for c in RAW}

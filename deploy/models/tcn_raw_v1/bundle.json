@@ -1,0 +1,90 @@
+{
+ "bundle_version": 1,
+ "created": "2026-10-27T01:48:49",
+ "code_revision": "60a5cc8+dirty",
+ "model": "tcn",
+ "config_file": "configs/models/tcn.yaml",
+ "train_subjects": [
+  "AE02",
+  "AE03",
+  "AE04",
+  "AE06",
+  "AE07",
+  "AE09",
+  "AE10",
+  "AE11"
+ ],
+ "n_train_trials": 63,
+ "epochs": 20,
+ "n_params": 129475,
+ "cpu_latency_ms": 3.839999990304932,
+ "inputs": [
+  "Fx_l",
+  "Fx_r",
+  "Fy_l",
+  "Fy_r",
+  "Fz_l",
+  "Fz_r",
+  "COPx_l",
+  "COPx_r",
+  "COPy_l",
+  "COPy_r",
+  "Mx_l",
+  "Mx_r",
+  "My_l",
+  "My_r",
+  "Mz_l",
+  "Mz_r",
+  "contact_l",
+  "contact_r",
+  "speed"
+ ],
+ "feature_groups": [
+  "forces",
+  "cop",
+  "moments",
+  "contact",
+  "speed"
+ ],
+ "subject_features": [
+  "heights",
+  "mass",
+  "legs",
+  "feet"
+ ],
+ "vertical": "anthro_centered",
+ "required_subject_fields": [
+  "feet",
+  "heights",
+  "legs",
+  "mass"
+ ],
+ "grf_rate_hz": 60,
+ "window_s": 4.0,
+ "preprocess": {
+  "grf_source": "raw",
+  "prefilter": null,
+  "grf_rate": 60,
+  "lowpass_hz": 25,
+  "filter_order": 2,
+  "contact_threshold_n": 50,
+  "cop_from_moments": true,
+  "unloaded_margin_n": 40,
+  "unloaded_erode_ms": 30,
+  "tare_window_s": null,
+  "valid_min_bw": 0.3,
+  "align_shift_frames": 0,
+  "workers": 4
+ },
+ "upstream_filter": null,
+ "output": "CoM_Pos_1..3 (m), mocap lab frame; one value per 60 Hz frame",
+ "development_loso": {
+  "tag": "raw_s0",
+  "folds": 8,
+  "rmse_mean_mm": 15.877336664930354,
+  "rmse_ap_mm": 17.847436786289148,
+  "rmse_ml_mm": 6.2058491137965355,
+  "rmse_vert_mm": 23.578724094705382,
+  "exc_rmse_mean_mm": 4.94419667427038
+ }
+}

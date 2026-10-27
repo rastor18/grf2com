@@ -1,9 +1,12 @@
 """Per-trial preprocessing into cache/<hash>/<subject>_<trial>.npz.
 
-Steps: zero each plate (tare from its unloaded periods), contact flag, hold COP while unloaded, causal Butterworth
+Steps: optional causal prefilter of the raw forces and moments (preprocess.prefilter), zero each plate (tare from its unloaded periods), contact flag, hold COP while unloaded, causal Butterworth
 low-pass, decimate to preprocess.grf_rate, align to the 60 Hz CoM frames, resample the belt-speed log with a causal
 hold, and build the valid-target mask. Everything applied sample by sample is causal; the tare is one constant per
 trial (see tare_window_s).
+
+preprocess.grf_source picks the force input: `csv` (the exported GRF, which MATLAB filtered with a zero-phase 10 Hz
+filtfilt, so not causal) or `raw` (the unfiltered C3D recordings in paths.raw_grf_dir, read with c3d.read_raw_grf).
 """
 from __future__ import annotations
 
@@ -51,6 +54,37 @@ def causal_filter(x: np.ndarray, sos: np.ndarray) -> np.ndarray:
     return out
 
 
+def prefilter_sos(pcfg: dict) -> tuple[np.ndarray | None, int]:
+    """(SOS, passes) of preprocess.prefilter, or (None, 0) when it is off."""
+    pre = pcfg.get("prefilter")
+    if not pre:
+        return None, 0
+    sos = signal.butter(int(pre["order"]), float(pre["cutoff_hz"]), fs=GRF_RATE, output="sos")
+    return sos, int(pre.get("passes", 1))
+
+
+def load_grf(subject: str, trial: str, pcfg: dict, data_dir: Path, raw_dir: Path | None = None) -> pd.DataFrame:
+    """The force-plate table with the CSV columns (time, F/M, and COP for the csv source), prefiltered if asked."""
+    source = pcfg.get("grf_source", "csv")
+    if source == "csv":
+        grf = pd.read_csv(data_dir / f"{subject}_{trial}_GRF.csv", engine="pyarrow")
+    elif source == "raw":
+        from .c3d import c3d_name, read_raw_grf
+        if not pcfg.get("cop_from_moments", True):
+            raise ValueError("grf_source: raw has no source COP; it needs preprocess.cop_from_moments: true")
+        index = pd.read_csv(data_dir / "trial_index.csv")
+        n = index.loc[(index.subject == subject) & (index.trial == trial), "n_grf_samples"]
+        grf = read_raw_grf(raw_dir / c3d_name(subject, trial), int(n.iloc[0]) if len(n) else None)
+    else:
+        raise ValueError(f"preprocess.grf_source must be csv or raw, got {source!r}")
+    sos, passes = prefilter_sos(pcfg)
+    for _ in range(passes):
+        for side in SIDES.values():
+            for q in TARED:
+                grf[f"{q}_{side}"] = causal_filter(grf[f"{q}_{side}"].to_numpy(float), sos)
+    return grf
+
+
 def unloaded_mask(fz: np.ndarray, margin_n: float, erode: int) -> tuple[np.ndarray, int]:
     """Samples where a plate is unloaded: raw Fz below a low percentile + margin, eroded away from transitions."""
     structure = np.ones(2 * erode + 1, bool) if erode else None
@@ -68,7 +102,7 @@ def _median(x: np.ndarray, mask: np.ndarray) -> float:
 
 
 def process_trial(subject: str, trial: str, pcfg: dict, data_dir: Path, mass_kg: float,
-                  events: pd.DataFrame | None = None) -> tuple[dict, dict]:
+                  events: pd.DataFrame | None = None, raw_dir: Path | None = None) -> tuple[dict, dict]:
     """Returns (arrays for the npz, summary row)."""
     rate = int(pcfg["grf_rate"])
     if GRF_RATE % rate or rate % COM_RATE:
@@ -76,7 +110,7 @@ def process_trial(subject: str, trial: str, pcfg: dict, data_dir: Path, mass_kg:
     step, k = GRF_RATE // rate, rate // COM_RATE
 
     stem = data_dir / f"{subject}_{trial}"
-    grf = pd.read_csv(f"{stem}_GRF.csv", engine="pyarrow")
+    grf = load_grf(subject, trial, pcfg, data_dir, raw_dir)
     com = pd.read_csv(f"{stem}_CoM.csv", engine="pyarrow")
     tm = pd.read_csv(f"{stem}_Treadmill.csv", engine="pyarrow")
 
@@ -164,8 +198,14 @@ def process_trial(subject: str, trial: str, pcfg: dict, data_dir: Path, mass_kg:
 
 
 def cache_key(cfg: dict) -> dict:
-    pcfg = {k: v for k, v in cfg["preprocess"].items() if k != "workers"}
-    return {"version": PREPROCESS_VERSION, "preprocess": pcfg, "data_dir": cfg["paths"]["data_dir"]}
+    # grf_source / prefilter at their defaults are left out, so caches built before they existed stay valid.
+    defaults = {"grf_source": "csv", "prefilter": None}
+    pcfg = {k: v for k, v in cfg["preprocess"].items()
+            if k != "workers" and not (k in defaults and v == defaults[k])}
+    key = {"version": PREPROCESS_VERSION, "preprocess": pcfg, "data_dir": cfg["paths"]["data_dir"]}
+    if pcfg.get("grf_source") == "raw":
+        key["raw_grf_dir"] = cfg["paths"]["raw_grf_dir"]
+    return key
 
 
 def cache_dir(cfg: dict) -> Path:
@@ -176,9 +216,9 @@ def trial_path(cdir: Path, subject: str, trial: str) -> Path:
     return cdir / f"{subject}_{trial}.npz"
 
 
-def _run_one(subject, trial, pcfg, data_dir, mass_kg, events, cdir: Path) -> dict:
+def _run_one(subject, trial, pcfg, data_dir, mass_kg, events, cdir: Path, raw_dir: Path | None = None) -> dict:
     t0 = time.perf_counter()
-    arrays, info = process_trial(subject, trial, pcfg, data_dir, mass_kg, events)
+    arrays, info = process_trial(subject, trial, pcfg, data_dir, mass_kg, events, raw_dir)
     info["seconds"] = round(time.perf_counter() - t0, 2)
     out = trial_path(cdir, subject, trial)
     tmp = out.with_name(out.stem + ".tmp.npz")
@@ -206,12 +246,14 @@ def run(cfg: dict, trials: list[tuple[str, str]] | None = None, workers: int | N
         info = load_infotable(cfg)
         events = load_events(cfg)
         data_dir = project_path(cfg, "data_dir")
+        raw_dir = project_path(cfg, "raw_grf_dir") if "raw_grf_dir" in cfg["paths"] else None
         pcfg = cfg["preprocess"]
         workers = workers or int(pcfg.get("workers", 1))
         if verbose:
             print(f"preprocessing {len(todo)} trial(s) with {workers} worker(s) -> {cdir}", flush=True)
         jobs = (delayed(_run_one)(s, t, pcfg, data_dir, float(info.loc[s, "mass"]),
-                                  events[(events.subject == s) & (events.trial == t)], cdir) for s, t in todo)
+                                  events[(events.subject == s) & (events.trial == t)], cdir, raw_dir)
+                for s, t in todo)
         for row in Parallel(n_jobs=workers, return_as="generator_unordered")(jobs):
             if verbose:
                 print(f"  {row['subject']} {row['trial']}: {row['n_frames']} frames, "

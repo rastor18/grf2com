@@ -1,5 +1,8 @@
-"""Synthetic dataset in the raw CSV format (4 development subjects + 1 locked), used by the data and smoke tests."""
+"""Synthetic dataset in the raw CSV format (4 development subjects + 1 locked), used by the data and smoke tests.
+Each trial's forces and moments are also written as a C3D in grf_raw/ (volts, like the Qualisys export)."""
 from __future__ import annotations
+
+import struct
 
 import numpy as np
 import pandas as pd
@@ -28,10 +31,59 @@ def _side(t: np.ndarray, shift: float, mass: float, rng) -> dict:
             "noise": rng.normal(0, 0.2, len(t))}
 
 
+CAL = np.array([500.0, 500.0, 1000.0, 800.0, 400.0, 400.0])   # N/V, N*m/V (as in the real files)
+# plate 1 = right on channels 7-12 with Mx / My swapped, plate 2 = left on 1-6 (as in the real files)
+PLATE_CHANNELS = {"right": [7, 8, 9, 11, 10, 12], "left": [1, 2, 3, 4, 5, 6]}
+
+
+def _c3d_param(gid: int, name: str, dtype: int, dims: list[int], data: bytes) -> bytes:
+    body = struct.pack("<bB", dtype, len(dims)) + bytes(dims) + data + b"\x00"
+    return struct.pack("<bb", len(name), gid) + name.encode() + struct.pack("<h", len(body) + 2) + body
+
+
+def _c3d_group(gid: int, name: str) -> bytes:
+    return struct.pack("<bb", len(name), -gid) + name.encode() + struct.pack("<h", 3) + b"\x00"
+
+
+def write_c3d(path, fm: dict[str, np.ndarray], fs: int = FS, frame_rate: int = COM_FS, nan_tail: int = 7) -> None:
+    """Minimal float C3D with 12 analog channels from {Fx_left: N, ..., Mz_right: N*m}; `nan_tail` NaN samples are
+    appended like the QTM padding. Inverse of grf2com.c3d.read_raw_grf."""
+    from grf2com.c3d import SIGN
+    spf = fs // frame_rate
+    n = len(next(iter(fm.values())))
+    volts = np.zeros((n, 14), np.float32)
+    for side, chans in PLATE_CHANNELS.items():
+        for q, c, g in zip(("Fx", "Fy", "Fz", "Mx", "My", "Mz"), chans, CAL):
+            volts[:, c - 1] = fm[f"{q}_{side}"] / g / SIGN / -1.0   # ANALOG.SCALE is -1
+    n_frames = -(-(n + nan_tail) // spf)
+    volts = np.vstack([volts, np.full((n_frames * spf - n, 14), np.nan, np.float32)])
+    f32 = lambda v: np.asarray(v, "<f4").tobytes()   # noqa: E731
+    i16 = lambda v: np.asarray(v, "<i2").tobytes()   # noqa: E731
+    chan = np.array([PLATE_CHANNELS["right"], PLATE_CHANNELS["left"]])   # (plate, 6) -> stored column-major (6, 2)
+    cal = np.stack([np.diag(CAL)] * 2)                                    # (plate, 6, 6) -> (6, 6, 2)
+    params = (_c3d_group(1, "POINT") + _c3d_param(1, "USED", 2, [], i16(0)) + _c3d_param(1, "SCALE", 4, [], f32(-1))
+              + _c3d_param(1, "RATE", 4, [], f32(frame_rate))
+              + _c3d_group(2, "ANALOG") + _c3d_param(2, "USED", 2, [], i16(14))
+              + _c3d_param(2, "SCALE", 4, [14], f32([-1.0] * 14)) + _c3d_param(2, "OFFSET", 2, [14], i16([0] * 14))
+              + _c3d_param(2, "GEN_SCALE", 4, [], f32(1.0)) + _c3d_param(2, "RATE", 4, [], f32(fs))
+              + _c3d_param(2, "LABELS", -1, [4, 2], b"Ch01Ch02")
+              + _c3d_group(3, "FORCE_PLATFORM") + _c3d_param(3, "USED", 2, [], i16(2))
+              + _c3d_param(3, "TYPE", 2, [2], i16([4, 4])) + _c3d_param(3, "CHANNEL", 2, [6, 2], i16(chan))
+              + _c3d_param(3, "CAL_MATRIX", 4, [6, 6, 2], f32(np.transpose(cal, (0, 2, 1))))
+              + _c3d_param(3, "MATRIX_STORE", -1, [8], b"BYCOLUMN"))
+    params += b"\x00\x00"
+    n_blocks = -(-(len(params) + 4) // 512)
+    psec = (bytes([1, 0x50, n_blocks, 84]) + params).ljust(n_blocks * 512, b"\x00")
+    data_block = 2 + n_blocks
+    header = struct.pack("<BBHHHHHfHHf", 2, 0x50, 0, 14 * spf, 1, n_frames, 0, -1.0, data_block, spf, frame_rate)
+    path.write_bytes(header.ljust(512, b"\x00") + psec + volts.astype("<f4").tobytes())
+
+
 def write_dataset(root, seed: int = 0) -> None:
     rng = np.random.default_rng(seed)
     data = root / "AE_grf2com_csv"
     data.mkdir(parents=True)
+    (root / "grf_raw").mkdir()
     t = np.arange(int(DUR_S * FS)) / FS
     tc = np.arange(int(DUR_S * COM_FS)) / COM_FS
     off = t > DUR_S - OFF_TREADMILL_S
@@ -61,6 +113,8 @@ def write_dataset(root, seed: int = 0) -> None:
             order = ["time"] + [f"{q}_{s}" for q in ("Fx", "Fy", "Fz", "COPx", "COPy", "COPz", "Mx", "My", "Mz")
                                 for s in ("left", "right")]
             pd.DataFrame(cols)[order].to_csv(data / f"{subj}_{trial}_GRF.csv", index=False)
+            write_c3d(root / "grf_raw" / f"{subj}_T{int(trial[1:]):02d}.c3d",
+                      {k: v for k, v in cols.items() if k[:2] in ("Fx", "Fy", "Fz", "Mx", "My", "Mz")})
             com = np.column_stack([0.8 + 0.05 * np.sin(2 * np.pi * tc / 15) + 0.01 * i,
                                    0.03 * np.sin(2 * np.pi * tc / STRIDE_S),
                                    0.85 + 0.002 * (165 + 3 * i - 170) + 0.01 * np.sin(4 * np.pi * tc / STRIDE_S)])
@@ -79,7 +133,8 @@ def write_dataset(root, seed: int = 0) -> None:
 def synthetic_config(root, model: str | None = None, overrides=()) -> dict:
     from grf2com.config import ROOT
     cfg = load_config(ROOT / "configs" / "models" / f"{model}.yaml" if model else None, [
-        f"paths.data_dir={(root / 'AE_grf2com_csv').as_posix()}", f"paths.infotable={(root / 'infotable.csv').as_posix()}",
+        f"paths.data_dir={(root / 'AE_grf2com_csv').as_posix()}", f"paths.raw_grf_dir={(root / 'grf_raw').as_posix()}",
+        f"paths.infotable={(root / 'infotable.csv').as_posix()}",
         f"paths.trial_map={(root / 'trial_map.csv').as_posix()}", f"paths.cache_dir={(root / 'cache').as_posix()}",
         f"paths.runs_dir={(root / 'runs').as_posix()}", f"paths.results_dir={(root / 'results').as_posix()}",
         "data.final_test_subjects=[S05]", "data.final_test_notes={}", "preprocess.workers=1",

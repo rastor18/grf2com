@@ -38,6 +38,11 @@ ABLATIONS = {
     "plus_labkf": ["data.features=[forces,cop,moments,contact,speed,lab_kf]"],      # + lab KF state
     "plus_kalman": ["data.features=[forces,cop,moments,contact,speed,kalman_state]"],   # + our Kalman's estimate
     "plus_both": ["data.features=[forces,cop,moments,contact,speed,lab_kf,kalman_state]"],
+    # unfiltered C3D forces (fully causal) instead of the filtfilt CSV export; no upstream filter to emulate live
+    "raw": ["preprocess.grf_source=raw", "realtime.upstream_filter=null"],
+    # raw + the live emulation of the CSV filter as our own causal prefilter (10 Hz, 2 passes, ~45 ms lag)
+    "raw_pre10": ["preprocess.grf_source=raw", "realtime.upstream_filter=null",
+                  "preprocess.prefilter={order: 2, cutoff_hz: 10, passes: 2}"],
 }
 
 
