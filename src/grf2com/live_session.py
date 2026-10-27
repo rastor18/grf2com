@@ -19,6 +19,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from .baselines.song_kf import LOOP_DT, LabKalmanStream
 from .bundle import load_bundle
@@ -28,6 +29,8 @@ from .treadmill import grf_arrow
 
 LOG_COLS = ["t", "frame", "com_ap", "com_ml", "com_vert", "compute_ms"] + RAW + ["speed"]
 TARE_LOADED_N = 100.0      # Fz range during the tare above this: the plates were probably not unloaded
+TORCH_THREADS = 1          # the models are tiny: more intra-op threads only spin, starve the GUI and, with two or
+                           # more bundles, made the engine fall behind a 1000 Hz stream (lag growing to seconds)
 
 
 def list_bundles(models_dir: Path) -> list[Path]:
@@ -314,7 +317,7 @@ class LiveEngine:
                                 "t": np.fromiter(p.hist_t, float, len(p.hist_t)),
                                 "hist": np.array(p.hist_com).reshape(-1, 3)}
             return {"state": self.state, "message": self.message, "fs": self.fs, "samples": self.samples,
-                    "t": (self.last_t - self.t0) if self.t0 is not None else 0.0, "speed": self.speed,
+                    "t": (self.last_t - self.t0) if self.t0 is not None else 0.0, "backlog": getattr(self.source, "backlog", 0.0), "speed": self.speed,
                     "fz": self.fz.copy(), "tared": dict(zip(RAW, self.tared.tolist())), "tare_progress": self.tare_progress, "offsets": self.offsets,
                     "recording": self._recording is not None, "models": models}
 
@@ -323,6 +326,7 @@ class LiveEngine:
         return self._recording["dir"] / f"{self._recording['stamp']}_{name}.csv"
 
     def _run(self) -> None:
+        torch.set_num_threads(TORCH_THREADS)
         try:
             it = iter(self.source)
             self.state = "taring"
@@ -370,6 +374,8 @@ class LiveEngine:
                 break
         arr = np.array(buf)
         self.fs = (len(arr) - 1) / (last - t0)
+        if hasattr(self.source, "fs") and not self.source.fs:
+            self.source.fs = self.fs           # BertecSource: spaces queued samples by it (sample clock)
         med = dict(zip(RAW, np.median(arr, axis=0).tolist()))
         offsets = {c: 0.0 for c in RAW} if self.no_tare else med
         fz = arr[:, [RAW.index("Fz_l"), RAW.index("Fz_r")]]

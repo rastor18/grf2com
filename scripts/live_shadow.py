@@ -86,6 +86,7 @@ def main() -> None:
         if not fs or not np.isfinite(fs):
             _, fs = live.measure_offsets(iter(source), 1.0)
         print(f"input rate: {fs:.0f} Hz", flush=True)
+        source.fs = fs                  # spaces queued samples (sample clock) if processing falls behind
         upstream = args.upstream or "bundle"
     up = meta.get("upstream_filter") if upstream == "bundle" else None
     pre = StreamingPreprocessor(cfg["preprocess"], offsets, fs=float(fs), upstream_filter=up)

@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 import sys
 import time
@@ -41,6 +42,7 @@ from .live_session import LabKfSpec, LiveEngine, list_bundles
 from .qtm import QtmRecorder, read_force_plates
 from .treadmill import BertecTreadmill, grf_arrow, plate_frames, to_display, treadmill_frame
 
+LAB_KF_COLOR = (255, 127, 14)                      # orange, whatever bundles are installed
 COLORS = [(31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148, 103, 189), (140, 86, 75),
           (227, 119, 194), (23, 190, 207)]
 SUBJECT_FIELDS = [("heights", "Height (cm)", 100, 220, 172), ("mass", "Mass (kg)", 30, 200, 76.5),
@@ -70,7 +72,7 @@ class ModelView:
             it.setVisible(False)
             view.addItem(it)
         self.plots = plots
-        self.curves = [p.plot(pen=pg.mkPen(color, width=2)) for p in plots]
+        self.curves = [p.plot(pen=pg.mkPen(color, width=1)) for p in plots]   # 1 px: Qt's fast path (wider is slow)
         self.step_plot = pg.ScatterPlotItem(size=8, brush=pg.mkBrush(*color), pen=None)
         plots[0].addItem(self.step_plot)
 
@@ -113,7 +115,7 @@ class ModelView:
                 c.setData(t, hist[:, i])
         else:                                               # AP only (ML / height are placeholders)
             self.curves[0].setData(t, hist[:, 0])
-            self.curves[0].setPen(pg.mkPen((*self.color, int(255 * self.UNUSED_ALPHA)), width=2))
+            self.curves[0].setPen(pg.mkPen((*self.color, int(255 * self.UNUSED_ALPHA)), width=1))
             pts = [(ts, to_display(pt, frame)[0]) for ts, pt in steps if len(t) and ts >= t[0]]
             self.step_plot.setData(pos=pts)
 
@@ -272,11 +274,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         mod = QtWidgets.QGroupBox("Models (deploy/models)")
         g = QtWidgets.QGridLayout(mod)
-        self.model_boxes, self.model_labels = {}, {}
+        self.model_boxes, self.model_labels, self.model_colors = {}, {}, {}
         checked = set(s.value("models", "", str).split(",")) - {""}
+        others = iter(c for c in itertools.cycle(COLORS) if c != LAB_KF_COLOR)   # the KF keeps orange
         for i, path in enumerate(self.bundles):
-            color = COLORS[i % len(COLORS)]
+            color = LAB_KF_COLOR if path == LabKfSpec.name else next(others)
             name = self._name(path)
+            self.model_colors[name] = color
             if path == LabKfSpec.name:
                 box = QtWidgets.QCheckBox(f"{name}  (self-paced treadmill KF)")
                 box.setToolTip("The lab's Song et al. (2020) Kalman filter, as in the self-paced treadmill code, on "
@@ -745,7 +749,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 label.setText("")
                 continue
             if name not in self.views:
-                self.views[name] = ModelView(self.view, self.plots, COLORS[i % len(COLORS)])
+                self.views[name] = ModelView(self.view, self.plots, self.model_colors[name])
             self.views[name].update(m, self.frame, trail_n, scale)
             if np.isfinite(m["compute_ms"]):
                 total_ms += m["compute_ms"]
@@ -778,8 +782,10 @@ class MainWindow(QtWidgets.QMainWindow):
             lines.append(f"input {snap['fs']:.0f} Hz, t {snap['t']:.1f} s, belt {snap['speed']:.2f} m/s (measured)")
             lines.append(f"Fz L {snap['fz'][0]:6.0f} N  R {snap['fz'][1]:6.0f} N")
             budget = 1000 / 60
+            behind = snap["backlog"] > 0.1
             lines.append(f"models {total_ms:.1f} ms per frame (budget {budget:.1f})"
-                         + ("  BEHIND REAL TIME" if total_ms > 0.9 * budget else ""))
+                         + (f"  BEHIND REAL TIME by {snap['backlog']:.1f} s" if behind
+                            else "  BEHIND REAL TIME" if total_ms > 0.9 * budget else ""))
         if snap["message"]:
             lines.append(snap["message"])
         self.status.setText("\n".join(lines))

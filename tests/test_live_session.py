@@ -102,7 +102,9 @@ def test_lab_kf_pipeline_logs_steps_and_commands(tmp_path):
     try:
         assert wait_for(lambda: eng.state == "running" and "lab_kf" in eng.pipes)
         eng.start_recording(tmp_path, "s")
-        assert wait_for(lambda: len(eng.snapshot()["models"]["lab_kf"]["steps"]) >= 10)
+        kf = eng.pipes["lab_kf"].kf
+        n0 = kf.n_step                                      # steps may already exist: wait for 10 while recording
+        assert wait_for(lambda: kf.n_step >= n0 + 10)
         logs = eng.stop_recording()
         m = eng.snapshot()["models"]["lab_kf"]
     finally:
@@ -116,3 +118,33 @@ def test_lab_kf_pipeline_logs_steps_and_commands(tmp_path):
     assert len(steps) >= 5 and steps.kf_v_target.notna().all() and df.kf_v_target[df.kf_used == 0].isna().all()
     # the step dots sit at com_step in the mocap lab frame
     assert np.allclose(np.diff(np.array([p[0] for _, p in m["steps"]])[-4:]), 0, atol=0.05)
+
+
+def test_bertec_source_spaces_queued_samples():
+    """Samples that were already queued (processing fell behind) are spaced 1 / fs apart, not by their arrival, so a
+    backlog can't make every sample a frame; the first fresh sample snaps back to its arrival time."""
+    zmq = pytest.importorskip("zmq")
+    from grf2com.config import load_config
+    from grf2com.live import BertecSource
+
+    bcfg = load_config()["realtime"]["bertec"]
+    pub = zmq.Context.instance().socket(zmq.PUB)
+    port = pub.bind_to_random_port("tcp://127.0.0.1")           # a fake publisher, never the Bertec software
+    assert port not in (5555, 5556)
+    src = BertecSource(bcfg, "127.0.0.1", port, timeout_ms=2000)
+    src.fs = 1000.0
+    msg = {k: 0.0 for k, _ in bcfg["channels"].values()} | {k: 0.0 for k in bcfg["speed_keys"]}
+    try:
+        assert wait_for(lambda: (pub.send_json(msg), src.sock.poll(10))[1], timeout=10)   # subscription is up
+        it = iter(src)
+        while src.sock.poll(50):                                  # drain the handshake messages
+            next(it)
+        for _ in range(200):                                      # a 200-sample backlog, all queued at once
+            pub.send_json(msg)
+        time.sleep(0.3)
+        t = np.array([next(it)[0] for _ in range(200)])
+    finally:
+        src.close()
+        pub.close(0)
+    assert np.allclose(np.diff(t[:-1]), 1e-3)                   # queued: spaced by the sample period
+    assert src.backlog == 0.0                                   # the last one was fresh: on arrival again

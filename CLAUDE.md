@@ -251,6 +251,11 @@ The target use is **real-time with force plates**, so every model and every prep
 - Live data: Bertec ZMQ publisher (`bertec_remote_control.py`, port 5556), subscribed without conflation as a
   second, read-only subscriber. The lab's own loop keeps only the latest sample every 15 ms. The publish rate is
   measured at start-up.
+  - Sample clock (`BertecSource._stamp`): fresh samples are stamped on arrival, queued ones 1 / fs after the
+    previous. Stamping queued samples on arrival made the GUI freeze with two networks on (~50 of 1000 samples/s,
+    lag growing without bound): spread-out stamps → a frame per sample → every model per sample → slower still.
+    The GUI shows "BEHIND REAL TIME by X s" from `source.backlog`. The engine runs torch on 1 thread
+    (`live_session.TORCH_THREADS`; the default 24 spun every core), and the 2D plot pens are 1 px (Qt's fast path).
 - `realtime.bertec.channels` (our channel → Bertec key, sign) is unverified; check it with
   `scripts/check_live_mapping.py`. `realtime.upstream_filter` describes the training data's MATLAB `filtfilt`; live,
   it is emulated causally (2 passes, ~45 ms lag) for `tcn_v1`. Raw-trained bundles (`tcn_raw_v1`) have it null.

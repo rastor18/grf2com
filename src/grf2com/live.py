@@ -110,14 +110,16 @@ class BertecSource:
         self.speed_keys = list(bcfg["speed_keys"])
         self.address = f"tcp://{host or bcfg['host']}:{port or bcfg['data_port']}"
         self.timeout_ms = timeout_ms
-        self._again = zmq.Again
+        self._again, self._pollin, self._events = zmq.Again, zmq.POLLIN, zmq.EVENTS
         self.ctx = zmq.Context.instance()
         self.sock = self.ctx.socket(zmq.SUB)
         self.sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
         self.sock.connect(self.address)
         self.sock.subscribe("")
         self.first_keys: list[str] | None = None
-        self.fs: float | None = None
+        self.fs: float | None = None       # set by the caller once measured; enables the sample clock
+        self.backlog = 0.0                  # s: how far the latest sample is behind real time
+        self._t: float | None = None
 
     def __iter__(self):
         while True:
@@ -127,9 +129,23 @@ class BertecSource:
                 raise TimeoutError(f"no Bertec data on {self.address} for {self.timeout_ms / 1000:.0f} s") from None
             if self.first_keys is None:
                 self.first_keys = sorted(msg)
-            t = time.perf_counter()
+            t = self._stamp(time.perf_counter())
             raw = {c: sign * float(msg[k]) for c, (k, sign) in self.channels.items()}
             yield t, raw, float(np.mean([msg[k] for k in self.speed_keys]))
+
+    def _stamp(self, t_arrival: float) -> float:
+        """Sample time. A sample is fresh when nothing else is queued behind it: stamp it on arrival. Queued ones
+        (processing fell behind) are spaced 1 / fs after the previous sample. Stamping those on arrival too would
+        space them at the processing rate: nearly every sample would make a new frame and run every model, which
+        slows processing further until it is stuck far behind (seen live with two networks on: ~50 samples/s of a
+        1000 Hz stream, lag growing without bound)."""
+        queued = bool(self.sock.getsockopt(self._events) & self._pollin)
+        if self.fs and self._t is not None and queued:
+            t = min(self._t + 1.0 / self.fs, t_arrival)
+        else:
+            t = t_arrival
+        self._t, self.backlog = t, t_arrival - t
+        return t
 
     def close(self):
         self.sock.close(0)
