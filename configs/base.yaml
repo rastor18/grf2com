@@ -98,3 +98,32 @@ realtime:
       My_r: [myr, 1]
       Mz_r: [mzr, 1]
     speed_keys: [velocityl, velocityr]      # belt speed = mean of these
+    rpc_port: 5555                          # remote-control RPC, for the GUI's speed controls
+  # QTM real-time server, for the GUI's Record button (scripts/live_gui.py): control password as set in QTM (Project
+  # Options > Real-Time Output), the same one Treadmill_QTM's QTMControl.py uses.
+  qtm: {host: 127.0.0.1, password: ri440e}
+
+# Live GUI (scripts/live_gui.py).
+gui:
+  # Treadmill display frame (3D view, plots, readouts; the logs stay in the mocap lab frame): AP from the posterior-most
+  # force-plate corner (forward +), ML from midway between the belts (left +), vertical above the belt surface.
+  # The plate corners (lab frame, m) are read from QTM's force-plate settings at start-up; these, read from QTM on
+  # 2026-10-23, are the fallback when QTM isn't reachable.
+  plates:
+    - {name: Right Belt, origin: [0.2795, 0.889, 0.0],
+       corners: [[1.7676, 0.0184, -0.0055], [1.7739, -0.5490, -0.0060], [0.0059, -0.5701, -0.0003],
+                 [-0.0003, -0.0070, 0.0017]]}
+    - {name: Left Belt, origin: [-0.2795, 0.889, 0.0],
+       corners: [[1.7651, 0.5866, -0.0024], [1.7693, 0.0238, -0.0060], [-0.0009, -0.0003, 0.0003],
+                 [-0.0120, 0.5625, 0.0019]]}
+  # GRF arrows (red, like QTM's): the ground reaction force on the body at each plate's COP, from the live tared
+  # channels. plate_axes = lab directions of the plates' x, y, z axes. Inferred, not measured: the training data's
+  # recomputed COPx (about -465 mm left, +465 mm right) only fits a measurement origin at each belt's rear outer corner
+  # (QTM's plate origin, centre - origin) with plate x = lab +y; Fz > 0 when loaded makes plate z = down, so y = lab +x.
+  # Check against QTM's own force arrows in a preview.
+  grf: {plate_axes: {x: [0, 1, 0], y: [1, 0, 0], z: [0, 0, -1]}, m_per_n: 0.001, min_fz_n: 50}
+  # Manual belt speed (Bertec remote control, both belts tied). Walking ramps at 0.1 m/s^2 as in Treadmill_QTM; the
+  # STOP button (or Esc) ramps down at stop_decel.
+  speed: {max_m_s: 2.0, step_m_s: 0.05, accel_m_s2: 0.1, max_accel_m_s2: 1.0, stop_decel_m_s2: 0.3}
+  history_s: 10                 # time-series plots
+  trail_s: 3                    # 3D trail

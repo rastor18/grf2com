@@ -225,7 +225,29 @@ The target use is **real-time with force plates**, so every model and every prep
 - `src/grf2com/realtime.py`: `StreamingPreprocessor` buffers raw samples and processes one block per frame, exactly
   equal to the batch cache (`tests/test_realtime.py`; 12–25 µs per sample). `StreamingEstimator` runs the model on
   the last 4 s every frame (~7 ms median CPU on the laptop). `src/grf2com/live.py`: replay / Bertec sources, tare,
-  run loop. `src/grf2com/bundle.py`: bundle write/load.
+  run loop, plus `SyntheticSource` (made-up forces for hardware-free tests). `src/grf2com/bundle.py`: bundle
+  write/load.
+- Live GUI (`scripts/live_gui.py`, `src/grf2com/gui.py`, PyQt5 + pyqtgraph): start / stop streaming (Bertec or
+  synthetic), several bundles at once (`src/grf2com/live_session.py` `LiveEngine`: one pipeline per bundle, toggled
+  while streaming; `tests/test_live_session.py`), 3D CoM view, manual belt speed, and Record = per-model logs + a QTM
+  capture saved as take `<stamp>` with `speed_<m/s>` events (`src/grf2com/qtm.py`, qtm-rt, same sequence as the lab's
+  Treadmill_QTM `QTMControl.py`; password `realtime.qtm.password`). The QTM capture path is not tested against QTM yet.
+  - Lab KF model (`live_session.LabKfSpec` / `LabKfPipeline`, `baselines/song_kf.LabKalmanStream`, equal to
+    `run_filter` tick for tick, `tests/test_song_kf.py`): the lab's filter on the live stream with opacity by "used"
+    (0.15 s after accepted steps) and the would-be speed command (`selfpace.control_law`). Checked against Vincent's
+    copy `C:\Users\Northeastern\NeuMove\Vincent\self-paced-treadmill\src\kalman_filter.py` (read-only): same
+    filter; it adds a skip when the force sample is unchanged (ported), an opt-in COP guard (off by default, not
+    ported) and step-width tracking (unused for speed). Its live Bertec read: Fz keys are negated, then negated again
+    in the filter (net Fz > 0 loaded), fy → −fy / m, COP AP = copy − 0.9 m, belt speed = mean(velocityl, velocityr).
+  - Speed: `src/grf2com/treadmill.py` `BertecTreadmill`, Bertec remote-control RPC (`InitConnect`, `RunTreadmill`,
+    port 5555, both belts tied; `tests/test_treadmill.py` uses a fake RPC server). Tested only against the fake: never
+    run a test that can reach the real port 5555.
+  - Display frame (`treadmill_frame`): AP from the posterior-most force-plate corner, ML midway between the belts,
+    vertical at the belt surface. GRF arrows (`plate_frames`, `grf_arrow`, `gui.grf`): plate measurement origin at
+    each belt's rear outer corner (plate centre − QTM's Origin (±279.5, 889) mm), plate x = lab +y, y = lab +x,
+    z = down; inferred from the training data's recomputed COPx ≈ ∓465 mm, not measured. Reaction = −R·F. Corners from QTM's force-plate settings (`qtm.read_force_plates`, read-only; empty
+    unless QTM has a measurement or preview open), fallback `gui.plates`. In QTM: lab x along the belts (0 at the back,
+    ~1.77 m at the front), left belt at +y, belts 1778 × 559 mm, surface z ≈ 0. Logs stay in the lab frame.
 - Live data: Bertec ZMQ publisher (`bertec_remote_control.py`, port 5556), subscribed without conflation as a
   second, read-only subscriber. The lab's own loop keeps only the latest sample every 15 ms. The publish rate is
   measured at start-up.
@@ -255,6 +277,7 @@ Use a venv interpreter: `.venv/Scripts/python.exe` (Intel / CPU) or `.venv-cuda/
 .venv/Scripts/python.exe scripts/final_test.py --configs ... --confirm   # locked subjects; only when the user asks
 .venv-cuda/Scripts/python.exe scripts/export_model.py --config configs/models/tcn.yaml --tag raw_s0 --set preprocess.grf_source=raw --set realtime.upstream_filter=null --name tcn_raw_v1
 .venv/Scripts/python.exe scripts/live_shadow.py --bundle deploy/models/tcn_raw_v1 --source replay --trial AE02_T1 --pace 0
+.venv/Scripts/python.exe scripts/live_gui.py                   # live GUI (Bertec or synthetic), Record = logs + QTM take
 ```
 
 ## Machine
